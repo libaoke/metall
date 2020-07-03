@@ -202,6 +202,8 @@ if (UMAP_ROOT)
         else ()
             message(FATAL_ERROR "Cannot find UMap library")
         endif ()
+    else()
+        message(WARNING "Cannot find UMap library")
     endif ()
 endif ()
 
