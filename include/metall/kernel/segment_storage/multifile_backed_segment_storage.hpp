@@ -12,6 +12,7 @@
 #include <metall/detail/utility/file.hpp>
 #include <metall/detail/utility/mmap.hpp>
 #include <metall/detail/utility/common.hpp>
+#include <metall/logger.hpp>
 
 namespace metall {
 namespace kernel {
@@ -38,9 +39,7 @@ class multifile_backed_segment_storage {
         m_base_path(),
         m_read_only(),
         m_free_file_space(true) {
-    if (!priv_load_system_page_size()) {
-      std::abort();
-    }
+    priv_load_system_page_size();
   }
 
   ~multifile_backed_segment_storage() {
@@ -51,7 +50,7 @@ class multifile_backed_segment_storage {
   multifile_backed_segment_storage(const multifile_backed_segment_storage &) = delete;
   multifile_backed_segment_storage &operator=(const multifile_backed_segment_storage &) = delete;
 
-  multifile_backed_segment_storage(multifile_backed_segment_storage &&other) noexcept :
+  multifile_backed_segment_storage(multifile_backed_segment_storage &&other) noexcept:
       m_system_page_size(other.m_system_page_size),
       m_num_blocks(other.m_num_blocks),
       m_vm_region_size(other.m_vm_region_size),
@@ -110,12 +109,16 @@ class multifile_backed_segment_storage {
               const size_type initial_segment_size) {
     assert(!priv_inited());
 
+    logger::out(logger::level::info, __FILE__, __LINE__,"Create a file with prefix " + base_path);
 
     // TODO: align those values to the page size instead of aborting
     if (initial_segment_size % page_size() != 0 || vm_region_size % page_size() != 0
         || (uint64_t)vm_region % page_size() != 0) {
-      std::cerr << "Invalid argument to crete application data segment" << std::endl;
-      std::abort();
+      logger::out(logger::level::critical,
+                  __FILE__,
+                  __LINE__,
+                  "Invalid argument to crete application data segment");
+      return false;
     }
 
     m_base_path = base_path;
@@ -140,10 +143,12 @@ class multifile_backed_segment_storage {
   bool open(const std::string &base_path, const size_type vm_region_size, void *const vm_region, const bool read_only) {
     assert(!priv_inited());
 
+    logger::out(logger::level::info, __FILE__, __LINE__,"Open a file with prefix " + base_path);
+
     // TODO: align those values to the page size instead of aborting
     if (vm_region_size % page_size() != 0 || (uint64_t)vm_region % page_size() != 0) {
-      std::cerr << "Invalid argument to open segment" << std::endl;
-      std::abort(); // Fatal error
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Invalid argument to open segment");
+      return false;
     }
 
     m_base_path = base_path;
@@ -161,7 +166,8 @@ class multifile_backed_segment_storage {
       const auto file_size = util::get_file_size(file_name);
       assert(file_size % page_size() == 0);
       if (!priv_map_file(file_name, file_size, static_cast<char *>(m_segment) + m_current_segment_size, read_only)) {
-        std::abort(); // Fatal error
+        logger::out(logger::level::critical, __FILE__, __LINE__, "Failed to map a file " + file_name);
+        return false;
       }
       m_current_segment_size += file_size;
       ++m_num_blocks;
@@ -183,7 +189,10 @@ class multifile_backed_segment_storage {
     }
 
     if (request_size > m_vm_region_size) {
-      std::cerr << "Requested segment size is bigger than the reserved VM size" << std::endl;
+      logger::out(logger::level::critical,
+                  __FILE__,
+                  __LINE__,
+                  "Requested segment size is bigger than the reserved VM size");
       return false;
     }
 
@@ -267,11 +276,14 @@ class multifile_backed_segment_storage {
     assert(!m_segment || static_cast<char *>(m_segment) + m_current_segment_size <= addr);
 
     const std::string file_name = priv_make_file_name(base_path, block_number);
+    logger::out(logger::level::info, __FILE__, __LINE__,
+                "Create and extend a file " + file_name + " with " + std::to_string(file_size) + " bytes");
+
     if (!util::create_file(file_name)) return false;
     if (!util::extend_file_size(file_name, file_size)) return false;
     if (static_cast<size_type>(util::get_file_size(file_name)) < file_size) {
-      std::cerr << "Failed to create and extend file: " << file_name << std::endl;
-      std::abort();
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Failed to create and extend file: " + file_name);
+      return false;
     }
 
     if (!priv_map_file(file_name, file_size, addr, false)) {
@@ -284,7 +296,7 @@ class multifile_backed_segment_storage {
     assert(!path.empty());
     assert(file_size > 0);
     assert(addr);
-    assert(reinterpret_cast<char*>(addr) + file_size <= reinterpret_cast<char*>(m_segment) + m_vm_region_size);
+    assert(reinterpret_cast<char *>(addr) + file_size <= reinterpret_cast<char *>(m_segment) + m_vm_region_size);
 
     static constexpr int map_nosync =
 #ifdef MAP_NOSYNC
@@ -293,11 +305,15 @@ class multifile_backed_segment_storage {
         0;
 #endif
 
+    logger::out(logger::level::info, __FILE__, __LINE__,
+                "Map a file " + path + " at " + std::to_string((uint64_t)addr) +
+                   " with " + std::to_string(file_size) + " bytes; read-only mode is " + std::to_string(read_only));
+
     const auto ret = (read_only) ?
                      util::map_file_read_mode(path, addr, file_size, 0, MAP_FIXED) :
                      util::map_file_write_mode(path, addr, file_size, 0, MAP_FIXED | map_nosync);
     if (ret.first == -1 || !ret.second) {
-      std::cerr << "Failed to map a file: " << path << std::endl;
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Failed to map a file: " + path);
       if (ret.first == -1) {
         util::os_close(ret.first);
       }
@@ -321,16 +337,22 @@ class multifile_backed_segment_storage {
 
     // Protect the region to detect unexpected write by application during msync
     if (!util::mprotect_read_only(m_segment, m_current_segment_size)) {
-     std::cerr << "Failed to protect the segment with the read only mode" << std::endl;
-     std::abort();
+      logger::out(logger::level::critical,
+                  __FILE__,
+                  __LINE__,
+                  "Failed to protect the segment with the read only mode");
+      return;
     }
     if (!util::os_msync(m_segment, m_current_segment_size, sync)) {
-      std::cerr << "Failed to msync the segment" << std::endl;
-      std::abort();
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Failed to msync the segment");
+      return;
     }
     if (!util::mprotect_read_write(m_segment, m_current_segment_size)) {
-      std::cerr << "Failed to set the segment to readable and writable" << std::endl;
-      std::abort();
+      logger::out(logger::level::critical,
+                  __FILE__,
+                  __LINE__,
+                  "Failed to set the segment to readable and writable");
+      return;
     }
   }
 
@@ -348,7 +370,7 @@ class multifile_backed_segment_storage {
   bool priv_load_system_page_size() {
     m_system_page_size = util::get_page_size();
     if (m_system_page_size == -1) {
-      std::cerr << "Failed to get system pagesize" << std::endl;
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Failed to get system pagesize");
       return false;
     }
     return true;
@@ -370,12 +392,12 @@ class multifile_backed_segment_storage {
 
     const auto ret = util::map_file_write_mode(file_path, nullptr, file_size, 0);
     if (ret.first == -1 || !ret.second) {
-      std::cerr << "Failed to map file: " << file_path << std::endl;
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Failed to map file: " + file_path);
       if (ret.first == -1) util::os_close(ret.first);
       return;
     }
-    if(!util::os_close(ret.first)) {
-      std::cerr << "Failed to close file: " << file_path << std::endl;
+    if (!util::os_close(ret.first)) {
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Failed to close file: " + file_path);
       return;
     }
 
@@ -391,7 +413,7 @@ class multifile_backed_segment_storage {
     // Closing
     util::munmap(ret.second, file_size, false);
     if (!util::remove_file(file_path)) {
-      std::cerr << "Failed to remove a file: " << file_path << std::endl;
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Failed to remove a file: " + file_path);
       return;
     }
   }

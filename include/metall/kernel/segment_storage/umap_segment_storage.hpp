@@ -21,6 +21,7 @@
 #include <metall/detail/utility/file.hpp>
 #include <metall/detail/utility/mmap.hpp>
 #include <metall/detail/utility/common.hpp>
+#include <metall/logger.hpp>
 
 namespace metall {
 namespace kernel {
@@ -45,9 +46,7 @@ class umap_segment_storage {
         m_base_path(),
         m_read_only(),
         m_free_file_space(true) {
-    if (!priv_load_umap_page_size()) {
-      std::abort();
-    }
+    priv_load_umap_page_size();
   }
 
   ~umap_segment_storage() {
@@ -59,7 +58,7 @@ class umap_segment_storage {
   umap_segment_storage(const umap_segment_storage &) = delete;
   umap_segment_storage &operator=(const umap_segment_storage &) = delete;
 
-  umap_segment_storage(umap_segment_storage &&other) noexcept :
+  umap_segment_storage(umap_segment_storage &&other) noexcept:
       m_umap_page_size(other.m_umap_page_size),
       m_num_blocks(other.m_num_blocks),
       m_vm_region_size(other.m_vm_region_size),
@@ -117,11 +116,16 @@ class umap_segment_storage {
               const size_type initial_segment_size) {
     assert(!priv_inited());
 
+    logger::out(logger::level::info, __FILE__, __LINE__,"Create a file with prefix " + base_path);
+
     // TODO: align those values to the page size instead of aborting
     if (initial_segment_size % page_size() != 0 || vm_region_size % page_size() != 0
         || (uint64_t)vm_region % page_size() != 0) {
-      std::cerr << "Invalid argument to crete application data segment" << std::endl;
-      std::abort();
+      logger::out(logger::level::critical,
+                     __FILE__,
+                     __LINE__,
+                     "Invalid argument to crete application data segment");
+      return false;
     }
 
     m_base_path = base_path;
@@ -145,10 +149,12 @@ class umap_segment_storage {
   bool open(const std::string &base_path, const size_type vm_region_size, void *const vm_region, const bool read_only) {
     assert(!priv_inited());
 
+    logger::out(logger::level::info, __FILE__, __LINE__,"Open a file with prefix " + base_path);
+
     // TODO: align those values to the page size instead of aborting
     if (vm_region_size % page_size() != 0 || (uint64_t)vm_region % page_size() != 0) {
-      std::cerr << "Invalid argument to open segment" << std::endl;
-      std::abort(); // Fatal error
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Invalid argument to open segment");
+      return false;
     }
 
     m_base_path = base_path;
@@ -166,7 +172,8 @@ class umap_segment_storage {
       const auto file_size = util::get_file_size(file_name);
       assert(file_size % page_size() == 0);
       if (!priv_map_file(file_name, file_size, static_cast<char *>(m_segment) + m_current_segment_size, read_only)) {
-        std::abort(); // Fatal error
+        logger::out(logger::level::critical, __FILE__, __LINE__, "Failed to map a file " + file_name);
+        return false;
       }
       m_current_segment_size += file_size;
       ++m_num_blocks;
@@ -187,7 +194,7 @@ class umap_segment_storage {
     }
 
     if (request_size > m_vm_region_size) {
-      std::cerr << "Requested segment size is too big" << std::endl;
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Requested segment size is too big");
       return false;
     }
 
@@ -271,13 +278,17 @@ class umap_segment_storage {
     assert(!m_segment || static_cast<char *>(m_segment) + m_current_segment_size <= addr);
 
     const std::string file_name = priv_make_file_name(base_path, block_number);
+    logger::out(logger::level::info, __FILE__, __LINE__,
+                   "Create a file " + file_name + " with " + std::to_string(file_size) + " bytes");
+
     if (!util::create_file(file_name)) return false;
     if (!util::extend_file_size(file_name, file_size)) return false;
     if (static_cast<size_type>(util::get_file_size(file_name)) < file_size) {
-      std::cerr << "Failed to create and extend file: " << file_name << std::endl;
-      std::abort();
+      logger::out(logger::level::critical, __FILE__, __LINE__,
+                     "Failed to create and extend file: " + file_name + " with " + std::to_string(file_size)
+                         + " bytes.");
+      return false;
     }
-
 
     if (!priv_map_file(file_name, file_size, addr, false)) {
       return false;
@@ -289,6 +300,10 @@ class umap_segment_storage {
     assert(!path.empty());
     assert(file_size > 0);
     assert(addr);
+
+    logger::out(logger::level::info, __FILE__, __LINE__,
+                   "Map a file " + path + " at " + std::to_string((uint64_t)addr) +
+                       " with " + std::to_string(file_size) + " bytes; read-only mode is " + std::to_string(read_only));
 
     // MEMO: one of the following options does not work on /tmp?
     const int o_opts = (read_only ? O_RDONLY : O_RDWR) | O_LARGEFILE | O_DIRECT;
@@ -304,7 +319,7 @@ class umap_segment_storage {
     void *const region = ::umap(addr, file_size, prot, flags, fd, 0);
     if (region == UMAP_FAILED) {
       std::ostringstream ss;
-      ss << "umap_mf of " << file_size << " bytes failed for " << path;
+      ss << "umap " << path  << " with " << file_size << " byte";
       perror(ss.str().c_str());
       return false;
     }
@@ -323,10 +338,10 @@ class umap_segment_storage {
       assert(file_size % page_size() == 0);
 
       if (::uunmap(static_cast<char *>(m_segment) + offset, file_size) != 0) {
-        std::cerr << "Failed to unmap a Umap region"
-                  << "\nblock number " << n
-                  << "\noffset " << offset << std::endl;
-        std::abort();
+        logger::out(logger::level::critical, __FILE__, __LINE__,
+                       "Failed to unmap a Umap region\n block number " + std::to_string(n) + "\n offset "
+                           + std::to_string(offset));
+        return;
       }
       offset += file_size;
     }
@@ -348,7 +363,7 @@ class umap_segment_storage {
     if (!priv_inited() || m_read_only) return;
 
     if (::umap_flush() != 0) {
-      std::cerr << "Failed umap_flush()" << std::endl;
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Failed umap_flush()");
     }
   }
 
@@ -364,7 +379,7 @@ class umap_segment_storage {
   bool priv_load_umap_page_size() {
     m_umap_page_size = ::umapcfg_get_umap_page_size();
     if (m_umap_page_size == -1) {
-      std::cerr << "Failed to get system pagesize" << std::endl;
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Failed to get system pagesize");
       return false;
     }
     return true;

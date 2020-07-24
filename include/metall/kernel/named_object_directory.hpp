@@ -19,6 +19,8 @@
 #include <boost/container/string.hpp>
 #include <boost/unordered_map.hpp>
 
+#include <metall/logger.hpp>
+
 namespace metall {
 namespace kernel {
 
@@ -127,7 +129,7 @@ class named_object_directory {
   bool serialize(const char *const path) const {
     std::ofstream ofs(path);
     if (!ofs.is_open()) {
-      std::cerr << "Cannot open: " << path << std::endl;
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Cannot open: " + std::string(path));
       return false;
     }
 
@@ -147,7 +149,10 @@ class named_object_directory {
 
       ofs << ss.str() << "\n";
       if (!ofs) {
-        std::cerr << "Something happened in the ofstream: " << path << std::endl;
+        logger::out(logger::level::critical,
+                    __FILE__,
+                    __LINE__,
+                    "Something happened in the ofstream: " + std::string(path));
         return false;
       }
     }
@@ -161,7 +166,7 @@ class named_object_directory {
   bool deserialize(const char *const path) {
     std::ifstream ifs(path);
     if (!ifs.is_open()) {
-      std::cerr << "Cannot open: " << path << std::endl;
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Cannot open: " + std::string(path));
       return false;
     }
 
@@ -185,13 +190,13 @@ class named_object_directory {
 
         const std::string name = deserialize_string(serialized_name);
         if (key != hash_string(name)) {
-          std::cerr << "Something is wrong in the read data" << std::endl;
+          logger::out(logger::level::critical, __FILE__, __LINE__, "Something is wrong in the read data");
           return false;
         }
 
         const bool ret = insert(name, offset, length);
         if (!ret) {
-          std::cerr << "Failed to insert" << std::endl;
+          logger::out(logger::level::critical, __FILE__, __LINE__, "Failed to insert");
           return false;
         }
       } else {
@@ -203,7 +208,10 @@ class named_object_directory {
     }
 
     if (!ifs.eof()) {
-      std::cerr << "Something happened in the ifstream: " << path << std::endl;
+      logger::out(logger::level::critical,
+                  __FILE__,
+                  __LINE__,
+                  "Something happened in the ifstream: " + std::string(path));
       return false;
     }
 
@@ -226,7 +234,7 @@ class named_object_directory {
 
   bool serialize_string(const std::string &name, serialized_string_type *out) const {
     if (name.size() > std::tuple_size<serialized_string_type>::value) {
-      std::cerr << "Too long name: " << name << std::endl;
+      logger::out(logger::level::critical, __FILE__, __LINE__, "Too long name: " + name);
       return false;
     }
     out->fill('\0');
